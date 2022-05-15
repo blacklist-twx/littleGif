@@ -7,20 +7,33 @@
 
 #include "create_gif.h"
 int tick = 0;
+int frame_length = 0;
 FILE *rgb_file;
-GifGenerator::GifGenerator(std::string create_path, int _height, int _width) {
-  this->gif_file = fopen(create_path.c_str(), "w");
+bool is_tree_build = false;
+GifGenerator::GifGenerator(GeneratorBuilder *builder) {
+  this->gif_file = fopen(builder->create_path.c_str(), "w");
   this->yuv_2_rgb = new YUV2RGB();
-  this->width = _width;
-  this->height = _height;
-  this->rgb = (u_int8_t *)malloc(_width * _height * 3);
+  this->width = builder->width;
+  this->height = builder->height;
+  this->frame_gap = builder->frame_gap;
+  this->rgb = (u_int8_t *)malloc(this->width * this->height * 3);
+  this->color_mode = builder->color_mode;
+  this->delay_time = builder->delay_time;
+  if (this->color_mode == GLOBAL_COLOR_TABLE) {
+    this->global_octree = new Octree();
+    this->global_color_table = new u_int32_t[256];
+  }
+
+  /*test*/
   rgb_file = fopen("/Users/a1234/Desktop/testRGB.rgb", "w");
+  /*test*/
 }
 
 void GifGenerator::onDecodeFrame(const BaseDecoderTest::Frame &frame) {
   //        std::cout<<"onDecodeFrame"<<std::endl;
-  if ((tick++) % 5 != 0)
+  if ((tick++) % this->frame_gap != 0)
     return;
+
   //    std::cout<<"width  height"<<std::endl;
   //    std::cout<<frame.y.width<<"  "<<frame.y.height<<std::endl;
   //    std::cout<<frame.u.width<<"  "<<frame.u.height<<std::endl;
@@ -28,38 +41,74 @@ void GifGenerator::onDecodeFrame(const BaseDecoderTest::Frame &frame) {
   //    std::cout<<frame.y.stride<<std::endl;
   //    std::cout<<frame.u.stride<<std::endl;
   //    std::cout<<frame.v.stride<<std::endl;
-  WriteGraphicControlExtension();
-  WriteImageDescriptor();
-    int width2 = frame.y.width;
-    
-  this->yuv_2_rgb->YUV420P2RGB(width, height, frame.y.stride, frame.y.data,
-                               frame.u.data, frame.v.data, rgb);
-  Octree *octree = new Octree();
-  u_int32_t color_table[256] = {0};
-  u_int8_t *rgb_index = (u_int8_t *)malloc(width * height);
-  //    memset(rgb_index, 1, width*height);
-  if (NULL == rgb_index) {
-    std::cout << "内存分配失败" << std::endl;
-  }
+  if (this->color_mode == GLOBAL_COLOR_TABLE) {
+    if (is_tree_build) {
+      this->yuv_2_rgb->YUV420P2RGB(width, height, frame.y.stride, frame.y.data,
+                                   frame.u.data, frame.v.data, rgb);
+      this->global_octree->RGB2Index(
+          this->global_octree->global_root_node, rgb, width, height,
+          this->global_color_table,
+          this->global_rgb_index[(tick - 1) / this->frame_gap]);
 
-  //    std::cout<<sizeof(rgb_index)<<std::endl;
-  octree->Quantizise(rgb, width, height, color_table, rgb_index);
-  if (tick == 1)
-    fwrite(rgb, width * height * 3, 1, rgb_file);
-  delete octree;
-  WriteLocalColorTable(color_table);
-  WriteImgData(rgb_index);
-  //        fwrite(rgb,width*height*3,1,gif_file);
-  //        fclose(gif_file);
-  std::cout << "writeData over" << std::endl;
-  free(rgb_index);
+    } else {
+      frame_length++;
+      this->yuv_2_rgb->YUV420P2RGB(width, height, frame.y.stride, frame.y.data,
+                                   frame.u.data, frame.v.data, rgb);
+      this->global_octree->PutColors(this->global_octree->global_root_node, rgb,
+                                     width, height);
+    }
+  } else {
+    WriteGraphicControlExtension(this->delay_time);
+    WriteImageDescriptor();
+    int width2 = frame.y.width;
+    this->yuv_2_rgb->YUV420P2RGB(width, height, frame.y.stride, frame.y.data,
+                                 frame.u.data, frame.v.data, rgb);
+    Octree *octree = new Octree();
+    u_int32_t color_table[256] = {0};
+    u_int8_t *rgb_index = (u_int8_t *)malloc(width * height);
+    if (NULL == rgb_index) {
+      std::cout << "内存分配失败" << std::endl;
+    }
+    //    std::cout<<sizeof(rgb_index)<<std::endl;
+    octree->Quantizise(rgb, width, height, color_table, rgb_index);
+    //  if (tick == 1)
+    //    fwrite(rgb, width * height * 3, 1, rgb_file);
+    delete octree;
+    WriteLocalColorTable(color_table);
+    WriteImgData(rgb_index);
+    std::cout << "writeData over" << std::endl;
+    free(rgb_index);
+  }
 }
+
 void GifGenerator::CreateGif() {
   WriteHeader(GIF89A);
   WriteLogicalScreenDescriptor();
-  WriteApplicationExtension();
-  WriteCommentExtension();
-  Decode(this);
+  if (this->color_mode == GLOBAL_COLOR_TABLE) {
+    Decode(this); // build tree
+    is_tree_build = true;
+    this->global_rgb_index = new u_int8_t *[(tick - 1) / this->frame_gap + 1];
+    for (int i = 0; i < (tick - 1) / this->frame_gap + 1; i++) {
+      this->global_rgb_index[i] = new u_int8_t[width * height];
+    }
+    tick = 0;
+    Decode(this); // get index and table
+    WriteLocalColorTable(this->global_color_table);
+    WriteApplicationExtension();
+    WriteCommentExtension();
+    for (int i = 0; i < frame_length; i++) {
+      WriteGraphicControlExtension(this->delay_time);
+      WriteImageDescriptor();
+      WriteImgData(this->global_rgb_index[i]);
+      std::cout << "writeData over" << std::endl;
+      //            free(rgb_index);
+    }
+  } else {
+    WriteApplicationExtension();
+    WriteCommentExtension();
+    Decode(this);
+  }
+
   WriteTail();
 }
 
@@ -93,7 +142,8 @@ void GifGenerator::WriteImgData(u_int8_t *rgb_index) {
 
   // GIF 一帧图像的数据解压后的数据
   unsigned char *img;
-  lzw_compress_gif(8, width*height, rgb_index, &compressed_size, &encoded_data);
+  lzw_compress_gif(8, width * height, rgb_index, &compressed_size,
+                   &encoded_data);
   //    u_int8_t *encoded_data = (u_int8_t *)malloc(width * height * 2);
   //  int compressed_size = encoding(rgb_index, encoded_data, width * height);
   printf("GIF 一帧图像压缩后大小：%ld\n", compressed_size);
@@ -130,10 +180,14 @@ void GifGenerator::WriteCommentExtension() {
   fwrite(gif_comment_extension, 36, 1, this->gif_file);
 }
 
-void GifGenerator::WriteGraphicControlExtension() {
+void GifGenerator::WriteGraphicControlExtension(int delay_time) {
   // 图形控制扩展
+  u_int8_t d1 = delay_time >> 0;
+  u_int8_t d2 = delay_time >> 8;
+  std::cout << (int)d1 << std::endl;
+  std::cout << (int)d2 << std::endl;
   uint8_t gif_graphic_control_extension[] = {0x21, 0xF9, 0x04, 0x00,
-                                             0x32, 0x00, 0xFF, 0x00};
+                                             d1,   d2,   0xFF, 0x00};
   fwrite(gif_graphic_control_extension, 8, 1, this->gif_file);
 }
 void GifGenerator::WriteImageDescriptor() {
@@ -143,9 +197,15 @@ void GifGenerator::WriteImageDescriptor() {
   u_int8_t h1 = height;
   u_int8_t h2 = (height >> 8);
 
-  // 1 0 1 0 0 111
+  // 1 0 1 0 0 111 = 0xA7  local
+  // 0 0 0 0 0 000 = 0x00 global
+  u_int8_t field;
+  if (this->color_mode == GLOBAL_COLOR_TABLE)
+    field = 0x00;
+  else
+    field = 0xA7;
   uint8_t gif_image_descriptor[] = {0x2C, 0x00, 0x00, 0x00, 0x00,
-                                    w1,   w2,   h1,   h2,   0xA7};
+                                    w1,   w2,   h1,   h2,   field};
   std::cout << (int)w1 << (int)w2 << std::endl;
   fwrite(gif_image_descriptor, 10, 1, gif_file);
 }
@@ -159,7 +219,11 @@ void GifGenerator::WriteTail() {
 void GifGenerator::WriteLogicalScreenDescriptor() {
   // 0x72 = 0   1 1 1   0   0 1 0
   // 0xF7 = 1   1 1 1   0   111
-  uint8_t gif_logical_screen_pack_byte = 0x72;
+  uint8_t gif_logical_screen_pack_byte;
+  if (this->color_mode == LOCAL_COLOR_TABLE)
+    gif_logical_screen_pack_byte = 0x72;
+  else
+    gif_logical_screen_pack_byte = 0xF7;
   //    uint8_t gif_logical_screen_pack_byte = 0xF7;
   uint8_t gif_bg_color_index = 0;
   uint8_t gif_pixel_aspect = 0;
@@ -171,3 +235,25 @@ void GifGenerator::WriteLogicalScreenDescriptor() {
   fputc(gif_bg_color_index, gif_file);
   fputc(gif_pixel_aspect, gif_file);
 }
+
+GeneratorBuilder::GeneratorBuilder(std::string _create_path, int _height,
+                                   int _width) {
+  this->create_path = _create_path;
+  this->width = _width;
+  this->height = _height;
+  this->color_mode = GLOBAL_COLOR_TABLE;
+  this->frame_gap = 5;
+  this->delay_time = 15;
+}
+
+void GeneratorBuilder::SetColorMode(enum GifColorTableMode mode) {
+  this->color_mode = mode;
+}
+
+void GeneratorBuilder::SetComment(std::string _comment) {
+  this->comment = _comment;
+}
+
+void GeneratorBuilder::SetDelayTime(int time) { this->delay_time = time; }
+
+void GeneratorBuilder::SetFrameGap(int gap) { this->frame_gap = gap; }

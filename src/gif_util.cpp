@@ -15,6 +15,7 @@ YUV2RGB::YUV2RGB() {
     __s_g_698001v[i] = (0.698001 * (i - 128));
   }
 }
+
 void YUV2RGB::YUV420P2RGB(int width, int height, int stride, const u_int8_t *Y,
                           const u_int8_t *U, const u_int8_t *V, u_int8_t *rgb) {
   int r, g, b;
