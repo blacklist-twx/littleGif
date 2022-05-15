@@ -8,10 +8,10 @@
 #ifndef decode_h264_h
 #define decode_h264_h
 
-#include <stdio.h>
 #include "BaseDecoderTest.h"
 #include "create_gif.h"
+#include <stdio.h>
 #include <string>
 
-void Decode(BaseDecoderTest::Callback* callback);
+void Decode(BaseDecoderTest::Callback *callback);
 #endif /* decode_h264_hpp */
